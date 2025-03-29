@@ -99,9 +99,180 @@ def gQ(q, p):
         return np.exp(np.sum([p[i] * np.log(q) ** (len(p) - i - 1) for i in range(len(p))]))
     return [np.exp(np.sum([p[i] * np.log(qq) ** (len(p) - i - 1) for i in range(len(p))])) for qq in np.array(q)]
 
+def generate_sample_points(basin_geometry, num_points):
+    """
+    Generate evenly distributed sample points within a watershed.
+    
+    Args:
+        basin_geometry: The basin geometry (shapely Polygon or MultiPolygon)
+        num_points: Number of points to generate
+        
+    Returns:
+        List of (latitude, longitude) tuples for sample points
+    """
+    from shapely.geometry import Point
+    import numpy as np
+    
+    # Convert MultiPolygon to single polygon if needed
+    try:
+        if hasattr(basin_geometry, 'geoms'):
+            # It's a MultiPolygon, find the largest polygon
+            geoms = list(basin_geometry.geoms)
+            idx = np.argmax([g.area for g in geoms])
+            geometry = geoms[idx]
+        else:
+            geometry = basin_geometry
+    except Exception as e:
+        # If any error, just use the original geometry
+        geometry = basin_geometry
+    
+    # Get the bounds of the geometry (minx, miny, maxx, maxy)
+    minx, miny, maxx, maxy = geometry.bounds
+    
+    # Generate points and keep those within the basin
+    sample_points = []
+    
+    # Always include the centroid as one point
+    centroid = geometry.centroid
+    sample_points.append((centroid.y, centroid.x))  # lat, lon
+    
+    # Special case - if we only need 1 point, return just the centroid
+    if num_points <= 1:
+        return sample_points
+    
+    # We need more points, so keep generating random points until we have enough
+    attempts = 0
+    max_attempts = num_points * 10  # Limit attempts to avoid infinite loop
+    
+    while len(sample_points) < num_points and attempts < max_attempts:
+        # Generate a random point within the bounding box
+        x = minx + (maxx - minx) * np.random.random()
+        y = miny + (maxy - miny) * np.random.random()
+        point = Point(x, y)
+        
+        # Check if the point is within the basin
+        if geometry.contains(point):
+            # Check if it's not too close to existing points (basic spacing)
+            is_far_enough = True
+            for existing_point in sample_points:
+                # Approximate distance check (could improve with proper geodesic distance)
+                dist = ((existing_point[1] - x)**2 + (existing_point[0] - y)**2)**0.5
+                if dist < (maxx - minx) / (num_points**0.5 * 2):  # Simple spacing heuristic
+                    is_far_enough = False
+                    break
+                    
+            if is_far_enough:
+                sample_points.append((y, x))  # lat, lon
+        
+        attempts += 1
+    
+    # If we couldn't get enough points, we'll work with what we have
+    return sample_points
+
+def get_daily_rainfall_forecast_multi(basin_geometry, model="ecmwf_ifs025"):
+    """
+    Get daily rainfall forecast for multiple points in a watershed based on its size.
+    
+    Args:
+        basin_geometry: The watershed geometry in WGS84 (EPSG:4326)
+        model: Weather forecast model to use
+        
+    Returns:
+        Dictionary with averaged forecast data
+    """
+    # Get the centroid for UTM zone determination
+    import pyproj
+    from shapely.ops import transform
+    from functools import partial
+    
+    # Get the centroid longitude to determine UTM zone
+    centroid = basin_geometry.centroid
+    lon, lat = centroid.x, centroid.y
+    
+    # Determine UTM zone based on longitude
+    utm_zone = int(1 + (lon + 180.0) / 6.0)
+    
+    # Define northern or southern hemisphere
+    hemisphere = 'north' if lat >= 0 else 'south'
+    
+    # Construct the EPSG code for the appropriate UTM zone
+    # EPSG codes for UTM North are 326xx where xx is the zone number
+    # EPSG codes for UTM South are 327xx where xx is the zone number
+    if hemisphere == 'north':
+        epsg_code = f"EPSG:{32600 + utm_zone}"
+    else:
+        epsg_code = f"EPSG:{32700 + utm_zone}"
+    
+    # Define the projection from WGS84 to UTM
+    project = partial(
+        pyproj.transform,
+        pyproj.Proj('EPSG:4326'),  # source coordinate system (WGS84)
+        pyproj.Proj(epsg_code)     # target coordinate system (UTM)
+    )
+    
+    # Transform the geometry to UTM
+    utm_geometry = transform(project, basin_geometry)
+    
+    # Calculate area in m² and convert to km²
+    area_m2 = utm_geometry.area
+    area_km2 = area_m2 / 1000000
+    
+    # Determine number of sample points based on watershed size
+    if area_km2 < 20:  # Small watershed
+        num_points = 1
+    elif area_km2 < 100:  # Medium watershed
+        num_points = 5
+    elif area_km2 < 500:  # Large watershed
+        num_points = 10
+    elif area_km2 < 1000:  # Very large watershed
+        num_points = 15
+    else:  # Extremely large watershed
+        num_points = 20
+    
+    # Generate sample points
+    sample_points = generate_sample_points(basin_geometry, num_points)
+    
+    # Log the number of points being used
+    st.write(f"Watershed area: {area_km2:.1f} km² - Using {len(sample_points)} sampling points for rainfall forecast")
+    
+    # Collect forecasts for all points
+    all_forecasts = []
+    for i, (lat, lon) in enumerate(sample_points):
+        try:
+            forecast = get_daily_rainfall_forecast(lat, lon, model)
+            all_forecasts.append(forecast)
+        except Exception as e:
+            st.warning(f"Error fetching forecast for point {i+1}: {e}")
+    
+    # We must have at least one successful forecast
+    if not all_forecasts:
+        raise Exception("Failed to get any rainfall forecasts")
+    
+    # Combine the forecasts (average the precipitation across all points)
+    # Start with the first forecast as a template
+    combined_forecast = all_forecasts[0].copy()
+    
+    # If we have multiple forecasts, average the precipitation values
+    if len(all_forecasts) > 1:
+        # Get the precipitation data from all forecasts
+        all_precip = []
+        for f in all_forecasts:
+            all_precip.append(f['daily']['precipitation_sum'])
+        
+        # Calculate average precipitation for each day
+        avg_precip = []
+        for i in range(len(all_precip[0])):
+            day_values = [precip[i] for precip in all_precip if i < len(precip)]
+            avg_precip.append(sum(day_values) / len(day_values))
+        
+        # Replace the precipitation values in the combined forecast
+        combined_forecast['daily']['precipitation_sum'] = avg_precip
+    
+    return combined_forecast
+
 def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
     """
-    Get daily rainfall forecast using Open-Meteo API.
+    Get daily rainfall forecast using Open-Meteo API for a single point.
     
     Models:
     - ecmwf_ifs025: ECMWF IFS-HRES (European Centre for Medium-Range Weather Forecasts)
@@ -279,8 +450,11 @@ def main():
                 area_ft2 = basin.to_crs('epsg:26910').geometry.values[0].area*10.7639104167
                 lat,lon = geo.y,geo.x
                 
-                # Get forecast using selected model from session state
-                forecast = get_daily_rainfall_forecast(lat, lon, model=st.session_state.selected_model)
+                # Get watershed geometry in WGS84 for rainfall sampling
+                basin_wgs84 = basin.to_crs('epsg:4326')
+                
+                # Get forecast from multiple points based on watershed size
+                forecast = get_daily_rainfall_forecast_multi(basin_wgs84.geometry.values[0], model=st.session_state.selected_model)
                 st.sidebar.success(f"Using {st.session_state.selected_model_name} for rainfall forecasts")
                 time = forecast['daily']['time']
                 precipitation_sum = forecast['daily']['precipitation_sum']
