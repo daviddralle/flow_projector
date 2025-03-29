@@ -12,19 +12,73 @@ import plotly.graph_objects as go
 from scipy.optimize import curve_fit
 import scipy.special
 import requests
+import pytz
 
 warnings.filterwarnings('ignore')
+
+# Define Los Angeles timezone
+LA_TIMEZONE = pytz.timezone('America/Los_Angeles')
 
 # Function to get flow data
 @cache_data
 def getFlow(site, start, stop):
     nwis = NWIS()
     nldi = NLDI()
-    df = nwis.get_streamflow(site, (start, stop), freq="dv")
-    df.columns = ['q']
-    df.index = pd.to_datetime(df.index)
-    df = df.tz_localize(None)
+    
+    # Get current date in LA timezone
+    today = datetime.datetime.now(LA_TIMEZONE).date()
+    yesterday = today - datetime.timedelta(days=1)
+    yesterday_str = yesterday.strftime('%Y-%m-%d')
+    
+    # Get daily values (dv) up to yesterday
+    df_dv = nwis.get_streamflow(site, (start, yesterday_str), freq="dv")
+    df_dv.columns = ['q']
+    df_dv.index = pd.to_datetime(df_dv.index)
+    df_dv = df_dv.tz_convert(LA_TIMEZONE) if df_dv.index.tz is not None else df_dv.tz_localize(LA_TIMEZONE)
+    
+    # Get instantaneous values (iv) from yesterday to tomorrow to ensure we get today's data
+    today_str = today.strftime('%Y-%m-%d')
+    tomorrow = today + datetime.timedelta(days=1)
+    tomorrow_str = tomorrow.strftime('%Y-%m-%d')
+    
+    # For IV data, we need to use yesterday to tomorrow to get complete data for today
+    try:
+        # Using yesterday-to-tomorrow range to ensure we get all of today's data
+        df_iv = nwis.get_streamflow(site, (yesterday_str, tomorrow_str), freq="iv")
+        df_iv.columns = ['q']
+        df_iv.index = pd.to_datetime(df_iv.index)
+        df_iv = df_iv.tz_convert(LA_TIMEZONE) if df_iv.index.tz is not None else df_iv.tz_localize(LA_TIMEZONE)
+        
+        # Calculate the mean of today's iv data
+        if not df_iv.empty:
+            # Filter to get only today's data
+            mask = (df_iv.index.date == today)
+            today_iv = df_iv[mask]
+            
+            if not today_iv.empty:
+                today_mean = today_iv['q'].mean()
+                today_df = pd.DataFrame({'q': [today_mean]}, index=[pd.Timestamp(today).tz_localize(LA_TIMEZONE)])
+            else:
+                st.warning(f"No instantaneous values found for today ({today})")
+                today_df = None
+            
+            # Combine dv and today's average if we have today's data
+            if today_df is not None:
+                df = pd.concat([df_dv, today_df])
+                st.success(f"Successfully combined historical daily values with today's average flow: {today_mean:.2f} cms")
+            else:
+                df = df_dv
+        else:
+            df = df_dv
+    except Exception as e:
+        st.warning(f"Could not fetch instantaneous values for today: {e}")
+        df = df_dv
+    
+    # Resample to daily frequency
     df = df.resample('D').mean()
+    df.columns = [site]
+    
+    # Get basin information
     basin = nldi.get_basins(site).to_crs('epsg:26910')
 
     try:
@@ -35,8 +89,7 @@ def getFlow(site, start, stop):
     except:
         basin.geometry = basin.geometry
     area_mm2 = basin.to_crs('epsg:26910').geometry[0].area*1000**2
-    df.q = 35.3147*df.q
-    df.columns = [site]
+    df = df * 35.3147  # Convert from cms to cfs
     return df, basin
 
 # Sensitivity function
@@ -46,17 +99,36 @@ def gQ(q, p):
         return np.exp(np.sum([p[i] * np.log(q) ** (len(p) - i - 1) for i in range(len(p))]))
     return [np.exp(np.sum([p[i] * np.log(qq) ** (len(p) - i - 1) for i in range(len(p))])) for qq in np.array(q)]
 
-def get_daily_rainfall_forecast(latitude, longitude):
+def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
+    """
+    Get daily rainfall forecast using Open-Meteo API.
+    
+    Models:
+    - ecmwf_ifs025: ECMWF IFS-HRES (European Centre for Medium-Range Weather Forecasts)
+    - gfs_seamless: GFS (Global Forecast System from NOAA)
+    - icon_seamless: ICON (German Weather Service/DWD)
+    """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": latitude,
         "longitude": longitude,
         "daily": "precipitation_sum",
-        "timezone": "auto"
+        "timezone": "America/Los_Angeles",
+        "models": [model]  # Correct format: "models" as a list
     }
-    response = requests.get(url, params=params)
-    data = response.json()
-    return data
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        data = response.json()
+        return data
+    except requests.RequestException as e:
+        # If the selected model fails, fall back to default model
+        if model != "ecmwf_ifs025":
+            st.warning(f"Error with {model} model: {str(e)}. Falling back to ECMWF model.")
+            return get_daily_rainfall_forecast(latitude, longitude, "ecmwf_ifs025")
+        else:
+            # If even the default model fails, raise the exception
+            raise e
 
 def main():
     st.title('Streamflow Projection App')
@@ -73,6 +145,10 @@ def main():
         st.session_state.site_id = None
     if 'T_days' not in st.session_state:
         st.session_state.T_days = None
+    if 'selected_model' not in st.session_state:
+        st.session_state.selected_model = "ecmwf_ifs025"  # Default model
+    if 'selected_model_name' not in st.session_state:
+        st.session_state.selected_model_name = "ECMWF (European Centre for Medium-Range Weather Forecasts)"
     if 'plot_dates' not in st.session_state:
         st.session_state.plot_dates = {
             'stop_datetime': None,
@@ -83,23 +159,56 @@ def main():
     site = st.sidebar.text_input('Enter USGS Gauge ID', '11476500')
     T = st.sidebar.number_input('Projection Period (days)', min_value=1, value=90)
     
+    # Weather model selection
+    model_mapping = {
+        "ECMWF (European Centre for Medium-Range Weather Forecasts)": "ecmwf_ifs025",
+        "GFS (Global Forecast System - NOAA)": "gfs_seamless",
+        "DWD (German Weather Service)": "icon_seamless"
+    }
+    
+    # Get the index of the previously selected model
+    model_options = list(model_mapping.keys())
+    default_index = model_options.index(st.session_state.selected_model_name) if st.session_state.selected_model_name in model_options else 0
+    
+    st.sidebar.subheader("Weather Model Selection")
+    forecast_model = st.sidebar.selectbox(
+        "Select Weather Forecast Model",
+        model_options,
+        index=default_index,
+        help="Choose the weather forecast model for rainfall predictions",
+        key="model_selector"  # Add key to track changes
+    )
+    
+    # Update session state when model changes
+    selected_model = model_mapping[forecast_model]
+    if selected_model != st.session_state.selected_model:
+        st.session_state.selected_model = selected_model
+        st.session_state.selected_model_name = forecast_model
+        # Force rerun when model changes
+        if st.session_state.has_run_analysis:
+            st.session_state.has_run_analysis = False
+            st.rerun()
+    
     def run_analysis():
         st.session_state.has_run_analysis = True
         st.session_state.site_id = site
         st.session_state.T_days = T
+        # Save the current model selection
+        st.session_state.selected_model = selected_model
+        st.session_state.selected_model_name = forecast_model
     
     if st.sidebar.button('Run Analysis', on_click=run_analysis) or st.session_state.has_run_analysis:
         # Date range for getting historical data
-        now = pd.to_datetime(datetime.datetime.now().strftime('%Y-%m-%d'))
+        now = pd.to_datetime(datetime.datetime.now(LA_TIMEZONE).strftime('%Y-%m-%d'))
         # Use 10 years of historical data instead of just 1 year
         start = now - pd.to_timedelta(10*365, unit='d')
         stop = now
         future_stop = now + pd.to_timedelta(T, unit='d')
         start_str = start.strftime('%Y-%m-%d')
         stop_str = stop.strftime('%Y-%m-%d')
-        stop_datetime = pd.to_datetime(stop_str)
+        stop_datetime = pd.to_datetime(stop_str).tz_localize(LA_TIMEZONE)
         future_stop_str = (future_stop - pd.to_timedelta(1, unit='d')).strftime('%Y-%m-%d')
-        future_stop_datetime = pd.to_datetime(future_stop_str)
+        future_stop_datetime = pd.to_datetime(future_stop_str).tz_localize(LA_TIMEZONE)
 
         with st.spinner(f"Retrieving data for gauge {site}..."):
             # Grab data
@@ -165,31 +274,86 @@ def main():
                 geo = basin.to_crs('epsg:4326').geometry.values[0].centroid
                 area_ft2 = basin.to_crs('epsg:26910').geometry.values[0].area*10.7639104167
                 lat,lon = geo.y,geo.x
-                forecast = get_daily_rainfall_forecast(lat, lon)
+                
+                # Get forecast using selected model from session state
+                forecast = get_daily_rainfall_forecast(lat, lon, model=st.session_state.selected_model)
+                st.sidebar.success(f"Using {st.session_state.selected_model_name} for rainfall forecasts")
                 time = forecast['daily']['time']
                 precipitation_sum = forecast['daily']['precipitation_sum']
-                df_forecast = pd.DataFrame({'ppt': precipitation_sum}, index=pd.to_datetime(time))
-                forecast_times = np.array(range(1,len(df_forecast)+1))
+                df_forecast = pd.DataFrame({'ppt': precipitation_sum}, index=pd.to_datetime(time).tz_localize(LA_TIMEZONE))
+          
+                # Get today's date in LA timezone for comparison
+                today = datetime.datetime.now(LA_TIMEZONE).date()
+                
+                # Check if today is in the forecast dates
+                today_in_forecast = False
+                forecast_start_idx = 0
+                
+                # Identify today's position in the forecast data
+                for i, date in enumerate(pd.to_datetime(df_forecast.index.date)):
+                    if date.date() == today:
+                        today_in_forecast = True
+                        forecast_start_idx = i
+                        break
+                
+                if not today_in_forecast:
+                    forecast_start_idx = 0
+                    
+                # Create a DataFrame for display later if needed
+                forecast_display = pd.DataFrame({
+                    'Date': pd.to_datetime(df_forecast.index).date,
+                    'Rainfall (mm)': df_forecast['ppt'].values
+                })
+                
+                # Create time array for integration and rainfall values
+                forecast_times = np.array(range(forecast_start_idx, len(df_forecast)))
+                adjusted_forecast_times = forecast_times - forecast_start_idx
+                
+                # Initialize rainfall values array
                 rain_vals = np.zeros_like(t)
-                # convert forecast mm/day into ft3/s increments
-                rain_vals[forecast_times] = 3.79727e-8*area_ft2*df_forecast['ppt'].values
-                print(rain_vals)
-
+                
+                # Convert forecast mm/day into ft3/s increments
+                # Use only the forecast from today onwards
+                forecast_rain = df_forecast['ppt'].values[forecast_start_idx:]
+                rain_vals[adjusted_forecast_times] = 3.79727e-8 * area_ft2 * forecast_rain
+                
+                # Save integration info for displaying later
+                integration_info = {
+                    'start_date': today,
+                    'initial_flow': df[site].values[-1],
+                    'forecast_start': forecast_display['Date'].iloc[forecast_start_idx] if len(forecast_rain) > 0 else None,
+                    'forecast_start_val': forecast_rain[0] if len(forecast_rain) > 0 else 0,
+                    'forecast_end': forecast_display['Date'].iloc[-1] if len(forecast_rain) > 0 else None,
+                    'forecast_end_val': forecast_rain[-1] if len(forecast_rain) > 0 else 0
+                }
+                
+                # Create forcing function for integration
                 forcing = interp1d(t, rain_vals, fill_value='extrapolate')
-                def fun(time,q):
+                
+                def fun(time, q):
                     return -newg(q, popt)*(q - forcing(time))
                 
+                # Use the latest flow value as initial condition
                 q0 = df[site].values[-1]
                 sol = solve_ivp(fun, [0, t[-1]], [q0], rtol=1e-5)
                 sol_int = interp1d(sol.t, sol.y[0], fill_value=0, bounds_error=False)
                 natQ = sol_int(t)
                 
-                # Create projection dataframe as in original
-                idx = pd.date_range(stop_datetime-pd.to_timedelta(1,unit='d'), future_stop_datetime - pd.to_timedelta(1,unit='d'), freq='D')
+                # Create projection dataframe starting from today
+                today_datetime = pd.Timestamp(today).tz_localize(LA_TIMEZONE)
+                projection_end = today_datetime + pd.to_timedelta(T-1, unit='d')
+                
+                idx = pd.date_range(
+                    today_datetime,
+                    projection_end,
+                    freq='D',
+                    tz=LA_TIMEZONE
+                )
+                
                 natQ_df = pd.DataFrame({'Flow projection': natQ}, index=idx)
                 
-                # Interactive Plotly plot
-                st.subheader('Flow Data and Projection with Rainfall Forecast')
+                # Interactive Plotly plot - Put this at the top
+                st.header('Flow Data and Projection with Rainfall Forecast')
                 
                 # Create plotly figure with secondary y-axis for rainfall
                 fig = go.Figure()
@@ -233,24 +397,45 @@ def main():
                 # Add rainfall forecast to the plot on secondary y-axis
                 rainfall_dates = pd.to_datetime(forecast['daily']['time'])
                 
-                # Create bar chart for rainfall with custom blue color
+                # Create color array to highlight today's rainfall
+                bar_colors = ['rgba(0, 100, 255, 0.6)'] * len(rainfall_dates)  # Default blue
+                if today_in_forecast:
+                    # Highlight today's rainfall with a different color
+                    bar_colors[forecast_start_idx] = 'rgba(255, 140, 0, 0.8)'  # Orange for today
+                
+                # Create bar chart for rainfall with custom colors
                 fig.add_trace(go.Bar(
                     x=rainfall_dates,
                     y=df_forecast['ppt'],
                     name='Rainfall Forecast',
-                    marker_color='rgba(0, 100, 255, 0.6)',
+                    marker_color=bar_colors,
                     yaxis='y2',  # Use secondary y-axis
                     hovertemplate='<b>Date</b>: %{x}<br><b>Rainfall</b>: %{y:.1f} mm<extra></extra>'
                 ))
+                
+                # Add annotation for today's rainfall if it exists
+                if today_in_forecast and df_forecast['ppt'].values[forecast_start_idx] > 0:
+                    today_rainfall = df_forecast['ppt'].values[forecast_start_idx]
+                    fig.add_annotation(
+                        x=rainfall_dates[forecast_start_idx],
+                        y=today_rainfall,
+                        text=f"Today: {today_rainfall:.1f} mm",
+                        showarrow=True,
+                        arrowhead=1,
+                        ax=0,
+                        ay=-40,
+                        yref="y2"
+                    )
                 
                 # Get the rainfall forecast date range for the title
                 forecast_start_date = rainfall_dates[0].strftime('%b %d, %Y')
                 forecast_end_date = rainfall_dates[-1].strftime('%b %d, %Y')
                 
                 # Set up the layout with log scale for primary y-axis and secondary y-axis for rainfall
+                # Now display the actual plot
                 fig.update_layout(
                     title={
-                        'text': f"Flow Projection for USGS Gage {site}<br>with Rainfall Forecast ({forecast_start_date} to {forecast_end_date})",
+                        'text': f"Flow Projection for USGS Gage {site}<br>Starting {today}",
                         'y':0.98,
                         'x':0.5,
                         'xanchor': 'center',
@@ -301,6 +486,18 @@ def main():
                 
                 # Show the plot
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # Display additional information at the bottom
+                with st.expander("Projection Details", expanded=False):
+                    st.write(f"Integration starting from {integration_info['start_date']} with initial flow: {integration_info['initial_flow']:.2f} cfs")
+                    
+                    if integration_info['forecast_start'] is not None:
+                        st.write(f"Using rainfall forecast from {integration_info['forecast_start']} ({integration_info['forecast_start_val']:.2f} mm) to {integration_info['forecast_end']} ({integration_info['forecast_end_val']:.2f} mm)")
+                        
+                        # Highlight today's rainfall if available
+                        if today_in_forecast:
+                            today_rainfall = df_forecast['ppt'].values[forecast_start_idx]
+                            st.info(f"Today's rainfall forecast: {today_rainfall:.2f} mm")
                 
                 # Store the data in session state
                 st.session_state.historical_data = df
