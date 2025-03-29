@@ -191,17 +191,17 @@ def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecm
         st.warning("UTM basin not provided. Using approximate area calculation.")
         area_km2 = 200  # Default to 200 km²
     
-    # Determine number of sample points based on watershed size
-    if area_km2 < 20:  # Small watershed
+    # Determine number of sample points based on watershed size (reduced by ~half)
+    if area_km2 < 40:  # Small watershed
         num_points = 1
-    elif area_km2 < 100:  # Medium watershed
+    elif area_km2 < 200:  # Medium watershed
+        num_points = 3
+    elif area_km2 < 750:  # Large watershed
         num_points = 5
-    elif area_km2 < 500:  # Large watershed
-        num_points = 10
-    elif area_km2 < 1000:  # Very large watershed
-        num_points = 15
+    elif area_km2 < 1500:  # Very large watershed
+        num_points = 7
     else:  # Extremely large watershed
-        num_points = 20
+        num_points = 10
     
     # Generate sample points
     sample_points = generate_sample_points(basin_geometry, num_points)
@@ -305,7 +305,7 @@ def main():
         }
         
     # User inputs
-    site = st.sidebar.text_input('Enter USGS Gauge ID', '11476500')
+    site = st.sidebar.text_input('Enter USGS Gauge ID', '11475800')
     T = st.sidebar.number_input('Projection Period (days)', min_value=1, value=90)
     
     # Weather model selection
@@ -658,6 +658,28 @@ def main():
                         if today_in_forecast:
                             today_rainfall = df_forecast['ppt'].values[forecast_start_idx]
                             st.info(f"Today's rainfall forecast: {today_rainfall:.2f} mm")
+                    
+                    # Add precipitation table
+                    st.subheader("Precipitation Forecast Table")
+                    
+                    # Create a clean dataframe for display
+                    precip_table = pd.DataFrame({
+                        'Date': pd.to_datetime(df_forecast.index).date,
+                        'Rainfall (mm)': df_forecast['ppt'].values.round(2)
+                    })
+                    
+                    # Highlight today's row with custom styling
+                    def highlight_today(row):
+                        if row.name in precip_table[precip_table['Date'] == today].index:
+                            return ['background-color: rgba(255, 165, 0, 0.2)'] * len(row)
+                        return [''] * len(row)
+                    
+                    # Display the table with styling
+                    st.dataframe(
+                        precip_table.style.apply(highlight_today, axis=1),
+                        use_container_width=True,
+                        hide_index=True
+                    )
                 
                 # Store the data in session state
                 st.session_state.historical_data = df
