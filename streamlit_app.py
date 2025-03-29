@@ -661,7 +661,7 @@ def main():
                     x=[natQ_df.index[0]],
                     y=[start_flow],
                     mode='markers',
-                    marker=dict(symbol='star', color='yellow', size=14, line=dict(color='black', width=2)),
+                    marker=dict(symbol='star', color='yellow', size=10, line=dict(color='black', width=2)),
                     name='Projection Start Point',
                     hoverinfo='text',
                     text=f"Projection Start: {start_date_str}<br>Flow: {start_flow:.2f} cfs"
@@ -851,7 +851,7 @@ def main():
                     # Show information about the distinct projection periods
                     st.markdown("**Projection Periods on Chart:**")
                     st.markdown("- **Historical Period**: No shading")
-                    st.markdown("- **Rainfall Forecast Period**: Light yellow shading")
+                    st.markdown("- **Rainfall Forecast Period**: Light green shading")
                     st.markdown("- **Flow Recession Period**: Light blue shading")
                     
                     if integration_info['forecast_start'] is not None:
@@ -912,7 +912,7 @@ def main():
                 # Add a download button for the projected data
                 with col2:
                     csv_projection = natQ_df.to_csv()
-                    projection_filename = f"projected_flow_{site}_{date_str}.csv"
+                    projection_filename = f"projected_flow_{site}_{date_str}_{current_model}.csv"
                     st.download_button(
                         label="Download Projected Data",
                         data=csv_projection,
