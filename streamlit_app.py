@@ -281,6 +281,9 @@ def main():
     # Add disclaimer about flow values
     st.warning("⚠️ IMPORTANT: All flow values shown represent DAILY averages, not instantaneous flow. These values should not be directly compared to instantaneous values posted in CNRFC forecasts.")
     
+    # Add caveat about the model approach
+    st.info("ℹ️ Model Information: This is a simple storage-discharge approach that assumes rainfall directly recharges hillslope groundwater tables that feed the stream. There is no accounting for vadose zone storage deficits that might result in less recharge.")
+    
     st.sidebar.header('Input Parameters')
     
     # Initialize session state to store data between reruns
@@ -312,7 +315,8 @@ def main():
     model_mapping = {
         "ECMWF (European Centre for Medium-Range Weather Forecasts)": "ecmwf_ifs025",
         "GFS (Global Forecast System - NOAA)": "gfs_seamless",
-        "DWD (German Weather Service)": "icon_seamless"
+        "DWD (German Weather Service)": "icon_seamless",
+        "No model (zero rainfall)": "no_model"
     }
     
     # Get the index of the previously selected model
@@ -320,23 +324,41 @@ def main():
     default_index = model_options.index(st.session_state.selected_model_name) if st.session_state.selected_model_name in model_options else 0
     
     st.sidebar.subheader("Weather Model Selection")
-    forecast_model = st.sidebar.selectbox(
+    
+    # Initialize the session state variables if they don't exist
+    if 'model_selector' not in st.session_state:
+        st.session_state.model_selector = st.session_state.selected_model_name
+    if 'trigger_rerun' not in st.session_state:
+        st.session_state.trigger_rerun = False
+        
+    # Check if we need to rerun based on previous callback
+    if st.session_state.trigger_rerun:
+        st.session_state.trigger_rerun = False
+        st.rerun()
+    
+    # Use a callback to handle model changes
+    def on_model_change():
+        model_name = st.session_state.model_selector
+        model_code = model_mapping[model_name]
+        st.session_state.selected_model = model_code
+        st.session_state.selected_model_name = model_name
+        if st.session_state.has_run_analysis:
+            st.session_state.has_run_analysis = False
+            # Don't call st.rerun() inside callback
+            st.session_state.trigger_rerun = True
+    
+    # Update the selectbox to use the callback
+    st.sidebar.selectbox(
         "Select Weather Forecast Model",
         model_options,
         index=default_index,
         help="Choose the weather forecast model for rainfall predictions",
-        key="model_selector"  # Add key to track changes
+        key="model_selector",
+        on_change=on_model_change
     )
     
-    # Update session state when model changes
-    selected_model = model_mapping[forecast_model]
-    if selected_model != st.session_state.selected_model:
-        st.session_state.selected_model = selected_model
-        st.session_state.selected_model_name = forecast_model
-        # Force rerun when model changes
-        if st.session_state.has_run_analysis:
-            st.session_state.has_run_analysis = False
-            st.rerun()
+    # Get the current selected model
+    selected_model = model_mapping[st.session_state.model_selector]
     
     def run_analysis():
         st.session_state.has_run_analysis = True
@@ -344,7 +366,7 @@ def main():
         st.session_state.T_days = T
         # Save the current model selection
         st.session_state.selected_model = selected_model
-        st.session_state.selected_model_name = forecast_model
+        st.session_state.selected_model_name = st.session_state.model_selector
     
     if st.sidebar.button('Run Analysis', on_click=run_analysis) or st.session_state.has_run_analysis:
         # Date range for getting historical data
@@ -430,14 +452,27 @@ def main():
                 # Convert basin to UTM for accurate area calculation
                 basin_utm = basin.to_crs('epsg:26910')
                 
-                # Get forecast from multiple points based on watershed size
-                # Pass both the WGS84 geometry for sampling points and the UTM basin for area calculation
-                forecast = get_daily_rainfall_forecast_multi(
-                    basin_geometry=basin_wgs84.geometry.values[0],
-                    basin_utm=basin_utm,
-                    model=st.session_state.selected_model
-                )
-                st.sidebar.success(f"Using {st.session_state.selected_model_name} for rainfall forecasts")
+                # Get forecast from multiple points based on watershed size or use zero rainfall if 'no_model' is selected
+                if st.session_state.selected_model == "no_model":
+                    # Create a zero-rainfall forecast for the projection period
+                    current_date = datetime.datetime.now(LA_TIMEZONE).date()
+                    forecast_dates = [current_date + datetime.timedelta(days=i) for i in range(T)]
+                    forecast_dates_str = [date.strftime("%Y-%m-%d") for date in forecast_dates]
+                    forecast = {
+                        'daily': {
+                            'time': forecast_dates_str,
+                            'precipitation_sum': [0.0] * len(forecast_dates_str)
+                        }
+                    }
+                    st.sidebar.success(f"Using {st.session_state.selected_model_name} (assuming zero rainfall)")
+                else:
+                    # Pass both the WGS84 geometry for sampling points and the UTM basin for area calculation
+                    forecast = get_daily_rainfall_forecast_multi(
+                        basin_geometry=basin_wgs84.geometry.values[0],
+                        basin_utm=basin_utm,
+                        model=st.session_state.selected_model
+                    )
+                    st.sidebar.success(f"Using {st.session_state.selected_model_name} for rainfall forecasts")
                 time = forecast['daily']['time']
                 precipitation_sum = forecast['daily']['precipitation_sum']
                 df_forecast = pd.DataFrame({'ppt': precipitation_sum}, index=pd.to_datetime(time).tz_localize(LA_TIMEZONE))
@@ -563,14 +598,64 @@ def main():
                     # Highlight today's rainfall with a different color
                     bar_colors[forecast_start_idx] = 'rgba(255, 140, 0, 0.8)'  # Orange for today
                 
+                # Set the default blue color used for rainfall bars
+                default_blue_color = 'rgba(0, 100, 255, 0.6)'  # Default blue for rainfall
+                
                 # Create bar chart for rainfall with custom colors
                 fig.add_trace(go.Bar(
                     x=rainfall_dates,
                     y=df_forecast['ppt'],
                     name='Rainfall Forecast',
                     marker_color=bar_colors,
+                    marker=dict(color=bar_colors, line=dict(color=bar_colors)),  # Removed colorbar
                     yaxis='y2',  # Use secondary y-axis
-                    hovertemplate='<b>Date</b>: %{x}<br><b>Rainfall</b>: %{y:.1f} mm<extra></extra>'
+                    hovertemplate='<b>Date</b>: %{x}<br><b>Rainfall</b>: %{y:.1f} mm<extra></extra>',
+                    showlegend=False  # Hide this from legend initially
+                ))
+                
+                # Add a separate visible trace for legend only
+                fig.add_trace(go.Bar(
+                    x=[None],
+                    y=[None],
+                    name='Rainfall Forecast',
+                    marker=dict(color=default_blue_color),
+                    showlegend=True,
+                    hoverinfo='skip'
+                ))
+                
+                # Add legend items for the shaded regions as colored squares
+                # 1. Rainfall forecast period (green)
+                rainfall_color = 'rgba(200, 255, 200, 0.8)'  # Light green, more opaque for legend visibility
+                fig.add_trace(go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode='markers',
+                    marker=dict(
+                        size=15,
+                        color=rainfall_color,
+                        symbol='square',
+                        line=dict(width=1, color='rgba(0, 0, 0, 0.3)')
+                    ),
+                    name='Rainfall Forecast Period',
+                    showlegend=True,
+                    hoverinfo='skip'
+                ))
+                
+                # 2. Recession forecast period (blue)
+                recession_color = 'rgba(200, 230, 255, 0.8)'  # Light blue, more opaque for legend visibility
+                fig.add_trace(go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode='markers',
+                    marker=dict(
+                        size=15,
+                        color=recession_color,
+                        symbol='square',
+                        line=dict(width=1, color='rgba(0, 0, 0, 0.3)')
+                    ),
+                    name='Recession Forecast Period',
+                    showlegend=True,
+                    hoverinfo='skip'
                 ))
                 
                 # Add annotation for today's rainfall if it exists
@@ -611,33 +696,59 @@ def main():
                         title='Rainfall (mm)',
                         side='right',
                         overlaying='y',
-                        rangemode='nonnegative',
-                        showgrid=False
+                        showgrid=False,
+                        range=[0, max(df_forecast['ppt'].max() * 1.1, 0.1)],  # Ensure proper y-axis range with padding
+                        zeroline=True,  # Show the zero line
+                        showline=True,  # Show the axis line
+                        showticklabels=True,  # Make sure tick labels are shown
+                        automargin=True,  # Ensure margin for labels
+                        dtick=5  # Set tick interval to 5mm
                     ),
                     xaxis=dict(range=[stop_datetime - pd.to_timedelta(60, unit='d'), future_stop_datetime]),
                     hovermode='closest',
-                    # Move legend below the chart instead of at the top
-                    legend=dict(
-                        orientation='h', 
-                        yanchor='top', 
-                        y=-0.15, 
-                        xanchor='center', 
-                        x=0.5
-                    ),
+
                     # Increase margins, especially top margin to prevent title overlap with buttons
                     margin=dict(l=50, r=60, t=80, b=80),
                     height=570,
-                    # Add a light blue rectangle to highlight the forecast period
+                    # Improve legend layout
+                    legend=dict(
+                        orientation='h',  # Horizontal layout
+                        yanchor='top',
+                        y=-0.15,  # Position below the chart
+                        xanchor='center',
+                        x=0.5,
+                        bgcolor='rgba(255, 255, 255, 0.8)',  # Semi-transparent background
+                        bordercolor='rgba(0, 0, 0, 0.1)',
+                        borderwidth=1
+                    ),
+                    # Add shaded regions to distinguish different periods
                     shapes=[
+                        # 1. Determine the end of rainfall forecast period
+                        # For actual weather forecasts or when zero rainfall is assumed, use the last date
                         dict(
                             type="rect",
                             xref="x",
                             yref="paper",
                             x0=stop_datetime,
                             y0=0,
+                            # Use the last rainfall date as the boundary
+                            x1=rainfall_dates[-1] if len(rainfall_dates) > 0 else stop_datetime,
+                            y1=1,
+                            fillcolor="rgba(200, 255, 200, 0.3)",  # Light green for rain forecast period
+                            line_width=0,
+                            layer="below"
+                        ),
+                        # 2. Add different shading for flow recession period (after rainfall forecast ends)
+                        dict(
+                            type="rect",
+                            xref="x",
+                            yref="paper",
+                            # Start from the end of rainfall forecast
+                            x0=rainfall_dates[-1] if len(rainfall_dates) > 0 else stop_datetime,
+                            y0=0,
                             x1=future_stop_datetime,
                             y1=1,
-                            fillcolor="rgba(200, 230, 255, 0.2)",
+                            fillcolor="rgba(200, 230, 255, 0.2)",  # Light blue for recession period
                             line_width=0,
                             layer="below"
                         )
@@ -650,6 +761,12 @@ def main():
                 # Display additional information at the bottom
                 with st.expander("Projection Details", expanded=False):
                     st.write(f"Integration starting from {integration_info['start_date']} with initial flow: {integration_info['initial_flow']:.2f} cfs")
+                    
+                    # Show information about the distinct projection periods
+                    st.markdown("**Projection Periods on Chart:**")
+                    st.markdown("- **Historical Period**: No shading")
+                    st.markdown("- **Rainfall Forecast Period**: Light yellow shading")
+                    st.markdown("- **Flow Recession Period**: Light blue shading")
                     
                     if integration_info['forecast_start'] is not None:
                         st.write(f"Using rainfall forecast from {integration_info['forecast_start']} ({integration_info['forecast_start_val']:.2f} mm) to {integration_info['forecast_end']} ({integration_info['forecast_end_val']:.2f} mm)")
