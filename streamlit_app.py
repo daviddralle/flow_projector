@@ -65,7 +65,8 @@ def getFlow(site, start, stop):
             # Combine dv and today's average if we have today's data
             if today_df is not None:
                 df = pd.concat([df_dv, today_df])
-                st.success(f"Successfully combined historical daily values with today's average flow: {today_mean:.2f} cms")
+                # Always store the success message in session state
+                st.session_state.flow_combination_message = f"Successfully combined historical daily values with today's average flow: {today_mean:.2f} cms"
             else:
                 df = df_dv
         else:
@@ -206,8 +207,8 @@ def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecm
     # Generate sample points
     sample_points = generate_sample_points(basin_geometry, num_points)
     
-    # Log the number of points being used
-    st.info(f"Watershed area: {area_km2:.1f} km² - Using {len(sample_points)} sampling points for rainfall forecast")
+    # Always store the watershed info in session state
+    st.session_state.watershed_info_message = f"Watershed area: {area_km2:.1f} km² - Using {len(sample_points)} sampling points for rainfall forecast"
     
     # Collect forecasts for all points
     all_forecasts = []
@@ -278,11 +279,19 @@ def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
 def main():
     st.title('Streamflow Projection App')
     
-    # Add disclaimer about flow values
-    st.warning("⚠️ IMPORTANT: All flow values shown represent DAILY averages, not instantaneous flow. These values should not be directly compared to instantaneous values posted in CNRFC forecasts.")
-    
-    # Add caveat about the model approach
-    st.info("ℹ️ Model Information: This is a simple storage-discharge approach that assumes rainfall directly recharges hillslope groundwater tables that feed the stream. There is no accounting for vadose zone storage deficits that might result in less recharge.")
+    # Put all model information in a single collapsible expander
+    with st.expander("⚠️ Model Caveats and Details", expanded=False):
+        st.markdown("""
+        <div style="font-size:0.9em;">
+            <p><strong>Important model limitations:</strong></p>
+            <ul>
+                <li>All flow values represent <strong>DAILY averages</strong>, not instantaneous flow. These values should not be directly compared to instantaneous values posted in CNRFC forecasts.</li>
+                <li>This is a simple <strong>storage-discharge approach for rain-dominated watersheds</strong>. It assumes rainfall directly recharges hillslope groundwater tables that feed the stream.</li>
+                <li>There is no accounting for <strong>vadose zone storage deficits</strong> that might result in less recharge.</li>
+                <li>This model <strong>does not handle snow accumulation or melt processes</strong> appropriately and should be used with caution in snow-affected watersheds.</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
     
     st.sidebar.header('Input Parameters')
     
@@ -301,6 +310,11 @@ def main():
         st.session_state.selected_model = "ecmwf_ifs025"  # Default model
     if 'selected_model_name' not in st.session_state:
         st.session_state.selected_model_name = "ECMWF (European Centre for Medium-Range Weather Forecasts)"
+    # Initialize message storage
+    if 'flow_combination_message' not in st.session_state:
+        st.session_state.flow_combination_message = None
+    if 'watershed_info_message' not in st.session_state:
+        st.session_state.watershed_info_message = None
     if 'plot_dates' not in st.session_state:
         st.session_state.plot_dates = {
             'stop_datetime': None,
@@ -314,7 +328,6 @@ def main():
         "SF Eel at Miranda, CA": "11476500",
         "Van Duzen River near Bridgeville, CA": "11478500",
         "Mad River near Arcata, CA": "11481000",
-        "Eel River at Scotia, CA": "11477000",
         "Custom/Other Gage...": "custom"
     }
     
@@ -386,9 +399,7 @@ def main():
     
     st.sidebar.subheader("Weather Model Selection")
     
-    # Initialize the session state variables if they don't exist
-    if 'model_selector' not in st.session_state:
-        st.session_state.model_selector = st.session_state.selected_model_name
+    # Initialize trigger_rerun if needed
     if 'trigger_rerun' not in st.session_state:
         st.session_state.trigger_rerun = False
         
@@ -408,11 +419,14 @@ def main():
             # Don't call st.rerun() inside callback
             st.session_state.trigger_rerun = True
     
-    # Update the selectbox to use the callback
+    # Instead of setting both default index and session state,
+    # just use a standard selectbox with the callback
+    current_model = st.session_state.selected_model_name
+    
     st.sidebar.selectbox(
         "Select Weather Forecast Model",
         model_options,
-        index=default_index,
+        index=model_options.index(current_model) if current_model in model_options else 0,
         help="Choose the weather forecast model for rainfall predictions",
         key="model_selector",
         on_change=on_model_change
@@ -428,6 +442,9 @@ def main():
         # Save the current model selection
         st.session_state.selected_model = selected_model
         st.session_state.selected_model_name = st.session_state.model_selector
+        # Reset message storage on new analysis
+        st.session_state.flow_combination_message = None
+        st.session_state.watershed_info_message = None
     
     if st.sidebar.button('Run Analysis', on_click=run_analysis) or st.session_state.has_run_analysis:
         # Date range for getting historical data
@@ -821,6 +838,14 @@ def main():
                 
                 # Display additional information at the bottom
                 with st.expander("Projection Details", expanded=False):
+                    # Display watershed information if available
+                    if 'watershed_info_message' in st.session_state and st.session_state.watershed_info_message:
+                        st.info(st.session_state.watershed_info_message)
+                        
+                    # Display flow combination message if available
+                    if 'flow_combination_message' in st.session_state and st.session_state.flow_combination_message:
+                        st.success(st.session_state.flow_combination_message)
+                    
                     st.write(f"Integration starting from {integration_info['start_date']} with initial flow: {integration_info['initial_flow']:.2f} cfs")
                     
                     # Show information about the distinct projection periods
