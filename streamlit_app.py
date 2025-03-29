@@ -169,14 +169,12 @@ def main():
                 time = forecast['daily']['time']
                 precipitation_sum = forecast['daily']['precipitation_sum']
                 df_forecast = pd.DataFrame({'ppt': precipitation_sum}, index=pd.to_datetime(time))
-                forecast_times = np.array(range(0,len(df_forecast)))
+                forecast_times = np.array(range(1,len(df_forecast)+1))
                 rain_vals = np.zeros_like(t)
                 # convert forecast mm/day into ft3/s increments
                 rain_vals[forecast_times] = 3.79727e-8*area_ft2*df_forecast['ppt'].values
                 print(rain_vals)
-                rain_vals[1] = rain_vals[0] + rain_vals[1]
-                rain_vals[0] = 0
-                print(rain_vals)
+
                 forcing = interp1d(t, rain_vals, fill_value='extrapolate')
                 def fun(time,q):
                     return -newg(q, popt)*(q - forcing(time))
@@ -191,7 +189,7 @@ def main():
                 natQ_df = pd.DataFrame({'Flow projection': natQ}, index=idx)
                 
                 # Interactive Plotly plot
-                st.subheader('Flow Data and Projection with Rainfall Forecast (Interactive)')
+                st.subheader('Flow Data and Projection with Rainfall Forecast')
                 
                 # Create plotly figure with secondary y-axis for rainfall
                 fig = go.Figure()
