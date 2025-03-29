@@ -132,6 +132,10 @@ def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
 
 def main():
     st.title('Streamflow Projection App')
+    
+    # Add disclaimer about flow values
+    st.warning("⚠️ IMPORTANT: All flow values shown represent DAILY averages, not instantaneous flow. These values should not be directly compared to instantaneous values posted in CNRFC forecasts.")
+    
     st.sidebar.header('Input Parameters')
     
     # Initialize session state to store data between reruns
