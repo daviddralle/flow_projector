@@ -169,53 +169,27 @@ def generate_sample_points(basin_geometry, num_points):
     # If we couldn't get enough points, we'll work with what we have
     return sample_points
 
-def get_daily_rainfall_forecast_multi(basin_geometry, model="ecmwf_ifs025"):
+def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecmwf_ifs025"):
     """
     Get daily rainfall forecast for multiple points in a watershed based on its size.
     
     Args:
-        basin_geometry: The watershed geometry in WGS84 (EPSG:4326)
+        basin_geometry: The watershed geometry in WGS84 (EPSG:4326) for point sampling
+        basin_utm: Optional basin GeoDataFrame in UTM projection for accurate area calculation
         model: Weather forecast model to use
         
     Returns:
         Dictionary with averaged forecast data
     """
-    # Get the centroid for UTM zone determination
-    import pyproj
-    from shapely.ops import transform
-    from functools import partial
-    
-    # Get the centroid longitude to determine UTM zone
-    centroid = basin_geometry.centroid
-    lon, lat = centroid.x, centroid.y
-    
-    # Determine UTM zone based on longitude
-    utm_zone = int(1 + (lon + 180.0) / 6.0)
-    
-    # Define northern or southern hemisphere
-    hemisphere = 'north' if lat >= 0 else 'south'
-    
-    # Construct the EPSG code for the appropriate UTM zone
-    # EPSG codes for UTM North are 326xx where xx is the zone number
-    # EPSG codes for UTM South are 327xx where xx is the zone number
-    if hemisphere == 'north':
-        epsg_code = f"EPSG:{32600 + utm_zone}"
+    # Calculate basin area in km²
+    if basin_utm is not None:
+        # Use the provided UTM basin for accurate area calculation
+        area_m2 = basin_utm.to_crs('epsg:26910').geometry[0].area
+        area_km2 = area_m2 / 1000000
     else:
-        epsg_code = f"EPSG:{32700 + utm_zone}"
-    
-    # Define the projection from WGS84 to UTM
-    project = partial(
-        pyproj.transform,
-        pyproj.Proj('EPSG:4326'),  # source coordinate system (WGS84)
-        pyproj.Proj(epsg_code)     # target coordinate system (UTM)
-    )
-    
-    # Transform the geometry to UTM
-    utm_geometry = transform(project, basin_geometry)
-    
-    # Calculate area in m² and convert to km²
-    area_m2 = utm_geometry.area
-    area_km2 = area_m2 / 1000000
+        # Fallback to rough estimate if UTM basin not provided
+        st.warning("UTM basin not provided. Using approximate area calculation.")
+        area_km2 = 200  # Default to 200 km²
     
     # Determine number of sample points based on watershed size
     if area_km2 < 20:  # Small watershed
@@ -233,7 +207,7 @@ def get_daily_rainfall_forecast_multi(basin_geometry, model="ecmwf_ifs025"):
     sample_points = generate_sample_points(basin_geometry, num_points)
     
     # Log the number of points being used
-    st.write(f"Watershed area: {area_km2:.1f} km² - Using {len(sample_points)} sampling points for rainfall forecast")
+    st.info(f"Watershed area: {area_km2:.1f} km² - Using {len(sample_points)} sampling points for rainfall forecast")
     
     # Collect forecasts for all points
     all_forecasts = []
@@ -453,8 +427,16 @@ def main():
                 # Get watershed geometry in WGS84 for rainfall sampling
                 basin_wgs84 = basin.to_crs('epsg:4326')
                 
+                # Convert basin to UTM for accurate area calculation
+                basin_utm = basin.to_crs('epsg:26910')
+                
                 # Get forecast from multiple points based on watershed size
-                forecast = get_daily_rainfall_forecast_multi(basin_wgs84.geometry.values[0], model=st.session_state.selected_model)
+                # Pass both the WGS84 geometry for sampling points and the UTM basin for area calculation
+                forecast = get_daily_rainfall_forecast_multi(
+                    basin_geometry=basin_wgs84.geometry.values[0],
+                    basin_utm=basin_utm,
+                    model=st.session_state.selected_model
+                )
                 st.sidebar.success(f"Using {st.session_state.selected_model_name} for rainfall forecasts")
                 time = forecast['daily']['time']
                 precipitation_sum = forecast['daily']['precipitation_sum']
