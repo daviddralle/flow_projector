@@ -307,8 +307,69 @@ def main():
             'future_stop_datetime': None
         }
         
-    # User inputs
-    site = st.sidebar.text_input('Enter USGS Gauge ID', '11475800')
+    # Define commonly used USGS gages with descriptive names
+    predefined_gages = {
+        "Elder Creek (Branscomb, CA)": "11475560",
+        "SF Eel at Leggett, CA": "11475800",
+        "SF Eel at Miranda, CA": "11476500",
+        "Van Duzen River near Bridgeville, CA": "11478500",
+        "Mad River near Arcata, CA": "11481000",
+        "Eel River at Scotia, CA": "11477000",
+        "Custom/Other Gage...": "custom"
+    }
+    
+    # Initialize gage selection in session state if it doesn't exist
+    if 'gage_selection' not in st.session_state:
+        st.session_state.gage_selection = list(predefined_gages.keys())[1]  # Default to SF Eel at Leggett
+    if 'custom_gage' not in st.session_state:
+        st.session_state.custom_gage = ""
+    if 'previous_gage' not in st.session_state:
+        st.session_state.previous_gage = st.session_state.gage_selection
+    
+    # Callback for gage selection changes
+    def on_gage_change():
+        # Reset analysis if gage changed
+        if st.session_state.gage_dropdown != st.session_state.previous_gage:
+            # The selection has changed
+            st.session_state.previous_gage = st.session_state.gage_dropdown
+            st.session_state.gage_selection = st.session_state.gage_dropdown
+            # Reset analysis state
+            if st.session_state.has_run_analysis:
+                st.session_state.has_run_analysis = False
+                st.session_state.trigger_rerun = True
+    
+    # Gage selection UI
+    st.sidebar.subheader("Gage Selection")
+    gage_selection = st.sidebar.selectbox(
+        "Select a USGS Gage",
+        options=list(predefined_gages.keys()),
+        index=list(predefined_gages.keys()).index(st.session_state.gage_selection),
+        key="gage_dropdown",
+        on_change=on_gage_change
+    )
+    
+    # Show custom gage input if "Custom" is selected
+    if st.session_state.gage_dropdown == "Custom/Other Gage...":
+        # Define callback for custom gage input changes
+        def on_custom_gage_change():
+            # Reset analysis if custom gage ID changed
+            if st.session_state.has_run_analysis:
+                st.session_state.has_run_analysis = False
+                st.session_state.trigger_rerun = True
+                
+        custom_gage = st.sidebar.text_input(
+            "Enter USGS Gage ID", 
+            value=st.session_state.custom_gage if st.session_state.custom_gage else "",
+            placeholder="e.g., 11475800",
+            key="custom_gage_input",
+            on_change=on_custom_gage_change
+        )
+        st.session_state.custom_gage = custom_gage
+        site = custom_gage if custom_gage.strip() else "11475800"  # Default if empty
+    else:
+        site = predefined_gages[st.session_state.gage_dropdown]
+        
+    # Projection period selection
     T = st.sidebar.number_input('Projection Period (days)', min_value=1, value=90)
     
     # Weather model selection
@@ -844,7 +905,10 @@ def main():
                     st.subheader(f"Projected Flow ({T} days)")
                     st.dataframe(natQ_df)
             else:
-                st.error(f"Failed to retrieve data for gauge {site}. Please check the gauge ID and try again.")
+                if gage_selection == "Custom/Other Gage...":
+                    st.error(f"Failed to retrieve data for custom gauge {site}. Please verify the USGS gauge ID and try again.")
+                else:
+                    st.error(f"Failed to retrieve data for gauge {gage_selection} (ID: {site}). Please try another gauge or check the USGS system.")
                 # Reset analysis state if data retrieval failed
                 st.session_state.has_run_analysis = False
 
