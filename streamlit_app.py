@@ -326,11 +326,12 @@ def main():
         
     # Define commonly used USGS gages with descriptive names
     predefined_gages = {
-        "Elder Creek (Branscomb, CA)": "11475560",
-        "SF Eel at Leggett, CA": "11475800",
-        "SF Eel at Miranda, CA": "11476500",
-        "Van Duzen River near Bridgeville, CA": "11478500",
-        "Mad River near Arcata, CA": "11481000",
+        "Elder Creek nr Branscomb": "11475560",
+        "SF Eel at Leggett": "11475800",
+        "SF Eel at Miranda": "11476500",
+        "MF Eel at Dos Rios": "11473900",
+        "Van Duzen nr Bridgeville": "11478500",
+        "Mad River nr Arcata": "11481000",
         "Custom/Other Gage...": "custom"
     }
     
@@ -386,7 +387,7 @@ def main():
         site = predefined_gages[st.session_state.gage_dropdown]
         
     # Projection period selection
-    T = st.sidebar.number_input('Projection Period (days)', min_value=1, value=90)
+    T = st.sidebar.number_input('Projection Period (days)', min_value=7, max_value=90, value=60)
     
     # Weather model selection
     model_mapping = {
