@@ -1,6 +1,6 @@
 # Flow Projector
 
-A web application that forecasts future streamflow based on weather predictions and historical river data from USGS streamgages. This tool helps water resource managers, researchers, and the public visualize potential changes in river flow over the coming weeks and months.
+A web application that forecasts future streamflow based on weather predictions and historical river data from USGS streamgages. The app was designed primarily for forecasting in Coastal California during the spring and early summer, when vadose zone deficits are small and most rainfall is converted to groundwater recharge (versus being stored in the unsaturated zone). Forecasts account for rain over a 7-day forecast period, after which the model assumes there is no rain and flows recede according to the underlying storage-discharge relationship (calculated behind the scenes from historical flow data). This tool helps water resource managers, researchers, and the public visualize potential changes in river flow over the coming weeks and months.
 
 ## What it does
 
@@ -13,7 +13,7 @@ A web application that forecasts future streamflow based on weather predictions 
 
 ## Best Application Period
 
-The app performs most accurately during the later wet season months and early spring, when vadose zone deficits are small and most rainfall is converted to groundwater recharge (versus being stored in the unsaturated zone).
+The forecast is most accurate during the later wet season months and early spring (in California), when vadose zone deficits are small and most rainfall is converted to groundwater recharge (versus being stored in the unsaturated zone).
 
 ## Methodology
 
