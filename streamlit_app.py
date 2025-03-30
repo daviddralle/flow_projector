@@ -192,17 +192,17 @@ def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecm
         st.warning("UTM basin not provided. Using approximate area calculation.")
         area_km2 = 200  # Default to 200 km²
     
-    # Determine number of sample points based on watershed size (reduced by ~half)
+    # Determine number of sample points based on watershed size
     if area_km2 < 40:  # Small watershed
         num_points = 1
     elif area_km2 < 200:  # Medium watershed
-        num_points = 3
+        num_points = 4  # Increased from 3
     elif area_km2 < 750:  # Large watershed
-        num_points = 5
+        num_points = 6  # Increased from 5
     elif area_km2 < 1500:  # Very large watershed
-        num_points = 7
+        num_points = 9  # Increased from 7
     else:  # Extremely large watershed
-        num_points = 10
+        num_points = 12  # Increased from 10
     
     # Generate sample points
     sample_points = generate_sample_points(basin_geometry, num_points)
@@ -278,6 +278,7 @@ def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
 
 def main():
     st.title('Streamflow Projection App')
+    st.markdown('<small><a href="https://github.com/daviddralle/flow_projector/blob/main/README.md" target="_blank">More details in the GitHub README</a></small>', unsafe_allow_html=True)
     
     # Put all model information in a single collapsible expander
     with st.expander("⚠️ Model Caveats and Details", expanded=False):
@@ -289,6 +290,8 @@ def main():
                 <li>This is a simple <strong>storage-discharge approach for rain-dominated watersheds</strong>. It assumes rainfall directly recharges hillslope groundwater tables that feed the stream.</li>
                 <li>There is no accounting for <strong>vadose zone storage deficits</strong> that might result in less recharge.</li>
                 <li>This model <strong>does not handle snow accumulation or melt processes</strong> appropriately and should be used with caution in snow-affected watersheds.</li>
+                <li>The app was designed primarily for forecasting in <strong>Coastal California during the spring and early summer</strong>, when vadose zone deficits are small and most rainfall is converted to groundwater recharge (versus being stored in the unsaturated zone).</li>
+                <li>Forecasts account for rain over a 7-day forecast period, after which the model assumes there is no rain and flows recede according to the underlying storage-discharge relationship (calculated behind the scenes from historical flow data).</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
