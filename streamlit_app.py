@@ -677,7 +677,7 @@ def main():
                 natQ_df = pd.DataFrame({'Flow projection': natQ}, index=idx)
                 
                 # Interactive Plotly plot - Put this at the top
-                st.header('Flow Projection with Rain Forecast')
+                st.header('Daily average (not instantaneous) flow forecast')
                 
                 # Create plotly figure with secondary y-axis for rainfall
                 fig = go.Figure()
