@@ -1,3 +1,4 @@
+from termios import TAB0
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -484,7 +485,7 @@ def main():
                     qs = seasonal_data[site].values
                     # Calculate gradients on the full time series first
                     all_qs = df[site].values
-                    all_dqs = np.gradient(all_qs)
+                    all_dqs = np.gradient(all_qs,86400)
                     # Map gradients back to the seasonal data
                     seasonal_indices = np.where(mask)[0]
                     dqs = all_dqs[seasonal_indices]
@@ -496,13 +497,12 @@ def main():
                 else:
                     st.warning("Not enough historical data matching the projection period's days of year. Using all available data instead.")
                     qs = df[site].values
-                    dqs = np.gradient(qs)
+                    dqs = np.gradient(qs,86400)
                     idx = (dqs < 0) & (qs > 0)
                     QS = qs[idx]
                     DQS = dqs[idx]
                 
-                # Integrate to get natural flow projection
-                t = np.linspace(0, T-1, T)
+                
 
                 # now perform fit with Adam's function
                 def bq(q,bl,bu):
@@ -586,6 +586,9 @@ def main():
                 forecast_times = np.array(range(forecast_start_idx, len(df_forecast)))
                 adjusted_forecast_times = forecast_times - forecast_start_idx
                 
+                # Define t for integration
+                t = np.linspace(0, T-1, T)*86400
+                
                 # Initialize rainfall values array
                 rain_vals = np.zeros_like(t)
                 
@@ -605,13 +608,14 @@ def main():
                 }
                 
                 # Create forcing function for integration
-                forcing = interp1d(t, rain_vals, fill_value='extrapolate')
+                forcing = interp1d(t, rain_vals, kind='previous',fill_value='extrapolate')
                 
                 def fun(time, q):
                     return -newg(q, popt)*(q - forcing(time))
                 
                 # Use the latest flow value as initial condition
                 q0 = df[site].values[-1]
+                
                 sol = solve_ivp(fun, [0, t[-1]], [q0], rtol=1e-5)
                 sol_int = interp1d(sol.t, sol.y[0], fill_value=0, bounds_error=False)
                 natQ = sol_int(t)
