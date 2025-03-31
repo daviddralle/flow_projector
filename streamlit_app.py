@@ -30,6 +30,8 @@ def getFlow(site, start, stop):
     today = datetime.datetime.now(LA_TIMEZONE).date()
     yesterday = today - datetime.timedelta(days=1)
     yesterday_str = yesterday.strftime('%Y-%m-%d')
+    two_days_ago = today - datetime.timedelta(days=2)
+    two_days_ago_str = two_days_ago.strftime('%Y-%m-%d')
     
     # Get daily values (dv) up to yesterday
     df_dv = nwis.get_streamflow(site, (start, yesterday_str), freq="dv")
@@ -37,20 +39,36 @@ def getFlow(site, start, stop):
     df_dv.index = pd.to_datetime(df_dv.index)
     df_dv = df_dv.tz_convert(LA_TIMEZONE) if df_dv.index.tz is not None else df_dv.tz_localize(LA_TIMEZONE)
     
-    # Get instantaneous values (iv) from yesterday to tomorrow to ensure we get today's data
+    # Get instantaneous values (iv) from 2 days ago to tomorrow to ensure we get today's data
     today_str = today.strftime('%Y-%m-%d')
     tomorrow = today + datetime.timedelta(days=1)
     tomorrow_str = tomorrow.strftime('%Y-%m-%d')
-    
-    # For IV data, we need to use yesterday to tomorrow to get complete data for today
+    # For IV data, we need to use 2 days ago to tomorrow to get complete data for today
     try:
-        # Using yesterday-to-tomorrow range to ensure we get all of today's data
-        df_iv = nwis.get_streamflow(site, (yesterday_str, tomorrow_str), freq="iv")
+        # Using 2-days-ago-to-tomorrow range to ensure we get all of today's and yesterday's data
+        df_iv = nwis.get_streamflow(site, (two_days_ago_str, tomorrow_str), freq="iv")
         df_iv.columns = ['q']
         df_iv.index = pd.to_datetime(df_iv.index)
         df_iv = df_iv.tz_convert(LA_TIMEZONE) if df_iv.index.tz is not None else df_iv.tz_localize(LA_TIMEZONE)
+      
+        # Check if yesterday's daily value is missing in df_dv
+        yesterday_timestamp = pd.Timestamp(yesterday).tz_localize(LA_TIMEZONE)
+        yesterday_missing = yesterday_timestamp not in df_dv.index
+        yesterday_df = None
+        
+        if yesterday_missing and not df_iv.empty:
+            # Filter to get yesterday's instantaneous data
+            yesterday_mask = (df_iv.index.date == yesterday)
+            yesterday_iv = df_iv[yesterday_mask]
+            
+            if not yesterday_iv.empty:
+                # Calculate the mean of yesterday's iv data
+                yesterday_mean = yesterday_iv['q'].mean()
+                yesterday_df = pd.DataFrame({'q': [yesterday_mean]}, index=[yesterday_timestamp])
+                # st.info(f"Using average of yesterday's instantaneous values: {yesterday_mean:.2f} cms to fill missing daily value")
         
         # Calculate the mean of today's iv data
+        today_df = None
         if not df_iv.empty:
             # Filter to get only today's data
             mask = (df_iv.index.date == today)
@@ -60,20 +78,45 @@ def getFlow(site, start, stop):
                 today_mean = today_iv['q'].mean()
                 today_df = pd.DataFrame({'q': [today_mean]}, index=[pd.Timestamp(today).tz_localize(LA_TIMEZONE)])
             else:
-                st.warning(f"No instantaneous values found for today ({today})")
-                today_df = None
+                # st.warning(f"No instantaneous values found for today ({today}). Using yesterday's final instantaneous value.")
+                # Filter to get yesterday's data
+                yesterday_mask = (df_iv.index.date == yesterday)
+                yesterday_iv = df_iv[yesterday_mask]
+                
+                if not yesterday_iv.empty:
+                    # Get the last instantaneous value from yesterday
+                    yesterday_final_value = yesterday_iv['q'].iloc[-1]
+                    today_df = pd.DataFrame({'q': [yesterday_final_value]}, index=[pd.Timestamp(today).tz_localize(LA_TIMEZONE)])
+                    # st.info(f"Using yesterday's final instantaneous value: {yesterday_final_value:.2f} cms")
+                else:
+                    # st.warning(f"No instantaneous values found for yesterday either. Using only historical data.")
+                    pass
             
-            # Combine dv and today's average if we have today's data
-            if today_df is not None:
-                df = pd.concat([df_dv, today_df])
-                # Always store the success message in session state
-                st.session_state.flow_combination_message = f"Successfully combined historical daily values with today's average flow: {today_mean:.2f} cms"
+            # Combine historical data with yesterday's and today's data if available
+            if yesterday_df is not None or today_df is not None:
+                # Start with historical data
+                combined_dfs = [df_dv]
+                
+                # Add yesterday's data if available
+                if yesterday_df is not None:
+                    combined_dfs.append(yesterday_df)
+                
+                # Add today's data if available
+                if today_df is not None:
+                    combined_dfs.append(today_df)
+                    if 'today_mean' in locals():
+                        st.session_state.flow_combination_message = f"Successfully combined historical daily values with today's average flow: {today_mean:.2f} cms"
+                
+                # Combine all available data
+                df = pd.concat(combined_dfs)
+                # Sort by date index to ensure chronological order
+                df = df.sort_index()
             else:
                 df = df_dv
         else:
             df = df_dv
     except Exception as e:
-        st.warning(f"Could not fetch instantaneous values for today: {e}")
+        # st.warning(f"Could not fetch instantaneous values for today: {e}")
         df = df_dv
     
     # Resample to daily frequency
