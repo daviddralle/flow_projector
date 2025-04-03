@@ -14,6 +14,8 @@ from scipy.optimize import curve_fit
 import scipy.special
 import requests
 import pytz
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 warnings.filterwarnings('ignore')
 
@@ -789,7 +791,7 @@ def main():
                 df_kirchner = df_kirchner.sort_values('q',ascending=False)
                 
                 # Set binning parameters
-                num_bins = 10  # Default number of bins
+                num_bins = 30  # Default number of bins
                 min_per_bin = 10  # Minimum points per bin
                 
                 # Get bin boundaries
@@ -855,6 +857,75 @@ def main():
                     st.warning(f"Curve fitting with sigma weighting failed: {e}. Falling back to unweighted fit.")
                     # Fall back to standard curve_fit without sigma weighting
                     popt, pcov = curve_fit(logeps, QS, np.log(-DQS))
+                
+                # Create and save dQ/dt vs Q plot with fit
+                freq = site  # Use site ID as frequency identifier
+                f, ax = plt.subplots(figsize=(5, 4))
+                
+                # Plot the raw scatter points with low alpha for context
+                ax.scatter(np.log(QS), np.log(-DQS), ec='k', c='dodgerblue', alpha=0.1)
+                
+                # Plot the binned data with error bars
+                log_qs = np.log(np.array(qs))
+                log_dqs = np.log(-np.array(dqs))
+                
+                # Convert standard errors to log space
+                log_sigmas = SS.copy()
+                
+                # Plot binned points with error bars
+                ax.errorbar(log_qs, log_dqs, yerr=log_sigmas, fmt='o', 
+                           color='dodgerblue', ecolor='black', capsize=3, 
+                           markersize=5, markeredgecolor='black', zorder=10)
+                
+                # Save raw data to CSV
+                pd.DataFrame({'x': np.log(QS), 'y': np.log(-DQS)}).to_csv(f'data_{freq}.csv')
+                
+                # Also save binned data with errors
+                pd.DataFrame({
+                    'log_q': log_qs, 
+                    'log_dq': log_dqs, 
+                    'se': log_sigmas
+                }).to_csv(f'binned_data_{freq}.csv')
+                
+                # Sort x values for smooth line plot
+                x = np.log(QS)
+                x_sorted = np.sort(x)
+                
+                # Calculate fit values
+                y = np.log(eps(np.exp(x_sorted), *popt))
+                
+                # Save fit data to CSV
+                pd.DataFrame({'x': x_sorted, 'y': y}).to_csv(f'fit_{freq}.csv')
+                
+                # Plot the fit line
+                ax.plot(x_sorted, y, c='k', lw=0.75, label='Dynamic power law (Wlostowski et al)')
+                
+                # Set labels and title
+                ax.set_xlabel('ln(Q)')
+                ax.set_ylabel(r'$\ln \left( -\mathrm{\frac{dQ}{dt}}\right)$')
+                ax.set_title(f'USGS {site}', fontsize=12)
+                
+                # Add legend
+                leg = ax.legend(fontsize=10, loc='best')
+                leg.set_frame_on(False)
+                
+                # Layout and style
+                f.tight_layout()
+                sns.despine()
+                
+                # Save the figure
+                plot_filename = f'dqdt_vs_q_{freq}.png'
+                f.savefig(plot_filename, dpi=300, bbox_inches='tight')
+                plt.close(f)
+                
+                # Add download button for the plot
+                with open(plot_filename, "rb") as file:
+                    btn = st.download_button(
+                        label="Download dQ/dt vs Q Plot",
+                        data=file,
+                        file_name=plot_filename,
+                        mime="image/png"
+                    )
                 geo = basin.to_crs('epsg:4326').geometry.values[0].centroid
                 area_ft2 = basin.to_crs('epsg:26910').geometry.values[0].area*10.7639104167
                 lat,lon = geo.y,geo.x
