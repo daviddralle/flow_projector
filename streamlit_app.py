@@ -144,6 +144,68 @@ def gQ(q, p):
         return np.exp(np.sum([p[i] * np.log(q) ** (len(p) - i - 1) for i in range(len(p))]))
     return [np.exp(np.sum([p[i] * np.log(qq) ** (len(p) - i - 1) for i in range(len(p))])) for qq in np.array(q)]
 
+@cache_data
+def predefined_binning_indices(df, num_bins=10, min_per_bin=10, loud=False):
+    """
+    Predefine bins for the DataFrame based on the logarithm of 'q' and
+    return a list of row indices representing the bin boundaries.
+
+    Each bin will have at least min_per_bin datapoints (if possible) by
+    merging candidate bins that don't reach the threshold.
+
+    Parameters:
+      df (pd.DataFrame): DataFrame with at least a 'q' column.
+      num_bins (int): Number of bins to attempt (using log-spaced edges).
+      min_per_bin (int): Minimum number of data points required per bin.
+      loud (bool): If True, prints debug information.
+
+    Returns:
+      List[int]: Sorted list of row indices that serve as bin boundaries.
+    """
+    # Sort the DataFrame in descending order of q and reset the index.
+    df_sorted = df.sort_values('q', ascending=False).reset_index(drop=True)
+
+    # Compute the natural logarithm of q.
+    logQ = np.log(df_sorted['q']).values
+
+    # Define bin edges in log space (from max to min of logQ).
+    bin_edges = np.linspace(logQ.max(), logQ.min(), num_bins + 1)
+    if loud:
+        print("Predefined bin edges:", bin_edges)
+
+    # Start with the first index (0).
+    boundaries = [0]
+    last_boundary = 0
+
+    # Loop over the candidate bin edges (skip the first, which is logQ.max()).
+    for edge in bin_edges[1:]:
+        # Find the first index where logQ <= edge.
+        indices = np.where(logQ <= edge)[0]
+        if len(indices) == 0:
+            continue
+        candidate = indices[0]
+        # Only add the candidate if it creates a bin with at least min_per_bin datapoints.
+        if candidate - last_boundary < min_per_bin:
+            if loud:
+                print(f"Candidate boundary {candidate} skipped (bin size {candidate - last_boundary} < {min_per_bin})")
+            continue
+        # Accept candidate boundary.
+        boundaries.append(candidate)
+        last_boundary = candidate
+
+    # Make sure the final bin (from last boundary to end of data) has at least min_per_bin points.
+    total_points = len(df_sorted)
+    if boundaries[-1] != total_points:
+        if total_points - boundaries[-1] < min_per_bin and len(boundaries) > 1:
+            if loud:
+                print("Final bin too small; merging with previous bin.")
+            boundaries.pop()  # Remove the last boundary so the bin becomes larger.
+        boundaries.append(total_points)
+
+    if loud:
+        print("Final bin boundary indices:", boundaries)
+    return boundaries
+
 def generate_sample_points(basin_geometry, num_points):
     """
     Generate evenly distributed sample points within a watershed.
@@ -716,7 +778,55 @@ def main():
                     QS = qs[idx]
                     DQS = dqs[idx]
                 
+                # Apply binning approach for more sophisticated fitting
+                # Convert to numpy arrays
+                QS = np.array(QS)
+                DQS = np.array(DQS)
                 
+                # Create dataframe for binning
+                df_kirchner = pd.DataFrame({'q':QS, 'dq':DQS})
+                df_kirchner = df_kirchner.dropna()
+                df_kirchner = df_kirchner.sort_values('q',ascending=False)
+                
+                # Set binning parameters
+                num_bins = 10  # Default number of bins
+                min_per_bin = 10  # Minimum points per bin
+                
+                # Get bin boundaries
+                binBoundaries = predefined_binning_indices(df_kirchner, num_bins=num_bins, min_per_bin=min_per_bin)
+                
+                # Calculate mean flow and mean flow derivative for each bin
+                qs = [np.mean(df_kirchner.q[binBoundaries[i]:binBoundaries[i+1]]) for i in range(len(binBoundaries)-1)]
+                dqs = np.array([np.mean(df_kirchner.dq[binBoundaries[i]:binBoundaries[i+1]]) for i in range(len(binBoundaries)-1)])
+                
+                # Calculate standard errors for each bin
+                sigmas = []
+                for i in range(len(binBoundaries)-1):
+                    # Get data for this bin
+                    bin_data = df_kirchner.dq[binBoundaries[i]:binBoundaries[i+1]]
+                    # Filter for negative dq values
+                    neg_dq = bin_data.loc[bin_data < 0]
+                    if len(neg_dq) > 1:  # Need at least 2 points to calculate std
+                        # Calculate standard error: std/sqrt(n)
+                        bin_se = np.std(np.log(-neg_dq)) / np.sqrt(len(neg_dq))
+                        sigmas.append(bin_se)
+                    else:
+                        # If not enough points, use a small default value
+                        sigmas.append(1e-2)
+                
+                # Convert to numpy array and add small constant to avoid division by zero
+                sigmas = np.array(sigmas) + 1e-12
+                
+                # Convert to numpy arrays
+                SS = np.array(sigmas)
+                QS = np.array(qs)
+                DQS = np.array(dqs)
+                
+                # Filter data
+                idx = (DQS<0)&(np.isfinite(QS)) & (np.isfinite(DQS))
+                QS = QS[idx]
+                DQS = DQS[idx]
+                SS = SS[idx]
 
                 # now perform fit with Adam's function
                 def bq(q,bl,bu):
@@ -737,7 +847,14 @@ def main():
                 def newg(q,popt):
                     return eps(q,*popt)/q
 
-                popt, _ = curve_fit(logeps, QS, np.log(-DQS))
+                # Use standard errors in curve fitting with error handling
+                try:
+                    # First try with sigma weighting
+                    popt, pcov = curve_fit(logeps, QS, np.log(-DQS), sigma=SS)
+                except Exception as e:
+                    st.warning(f"Curve fitting with sigma weighting failed: {e}. Falling back to unweighted fit.")
+                    # Fall back to standard curve_fit without sigma weighting
+                    popt, pcov = curve_fit(logeps, QS, np.log(-DQS))
                 geo = basin.to_crs('epsg:4326').geometry.values[0].centroid
                 area_ft2 = basin.to_crs('epsg:26910').geometry.values[0].area*10.7639104167
                 lat,lon = geo.y,geo.x
