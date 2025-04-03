@@ -16,11 +16,17 @@ import requests
 import pytz
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
+import base64
 
 warnings.filterwarnings('ignore')
 
 # Define Los Angeles timezone
 LA_TIMEZONE = pytz.timezone('America/Los_Angeles')
+
+# Ensure plots directory exists
+PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plots')
+os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Function to get flow data
 @cache_data
@@ -309,7 +315,7 @@ def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecm
         num_points = 6  # Increased from 5
     elif area_km2 < 1500:  # Very large watershed
         num_points = 9  # Increased from 7
-    else:  # Extremely large watershed
+    else:  # Extremely large watershed - this will be caught in the main function
         num_points = 12  # Increased from 10
     
     # Generate sample points
@@ -479,6 +485,23 @@ def get_historical_rainfall(latitude, longitude, start_date, end_date, timezone=
     except Exception as e:
         st.warning(f"Error retrieving historical rainfall data: {str(e)}")
         return None
+
+# Function to create a download link for a dataframe
+def get_csv_download_link(df, filename, link_text):
+    """Generates a link to download the dataframe as a CSV file"""
+    csv = df.to_csv(index=True)
+    b64 = base64.b64encode(csv.encode()).decode()  # Encode to base64
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">{link_text}</a>'
+    return href
+
+# Function to create a download link for binary files (like images)
+def get_binary_download_link(file_path, filename, link_text, mime_type):
+    """Generates a link to download a binary file"""
+    with open(file_path, "rb") as f:
+        data = f.read()
+    b64 = base64.b64encode(data).decode()
+    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">{link_text}</a>'
+    return href
 
 def main():
     st.title('Streamflow Projection App')
@@ -877,15 +900,19 @@ def main():
                            color='dodgerblue', ecolor='black', capsize=3, 
                            markersize=5, markeredgecolor='black', zorder=10)
                 
-                # Save raw data to CSV
-                pd.DataFrame({'x': np.log(QS), 'y': np.log(-DQS)}).to_csv(f'data_{freq}.csv')
+                # Save raw data to CSV in plots folder
+                data_filename = f'data_{freq}.csv'
+                data_path = os.path.join(PLOTS_DIR, data_filename)
+                pd.DataFrame({'x': np.log(QS), 'y': np.log(-DQS)}).to_csv(data_path)
                 
-                # Also save binned data with errors
+                # Save binned data to CSV in plots folder
+                binned_data_filename = f'binned_data_{freq}.csv'
+                binned_data_path = os.path.join(PLOTS_DIR, binned_data_filename)
                 pd.DataFrame({
                     'log_q': log_qs, 
-                    'log_dq': log_dqs, 
+                    'log_dq': log_dqs,
                     'se': log_sigmas
-                }).to_csv(f'binned_data_{freq}.csv')
+                }).to_csv(binned_data_path)
                 
                 # Sort x values for smooth line plot
                 x = np.log(QS)
@@ -894,8 +921,10 @@ def main():
                 # Calculate fit values
                 y = np.log(eps(np.exp(x_sorted), *popt))
                 
-                # Save fit data to CSV
-                pd.DataFrame({'x': x_sorted, 'y': y}).to_csv(f'fit_{freq}.csv')
+                # Save fit data to CSV in plots folder
+                fit_data_filename = f'fit_{freq}.csv'
+                fit_data_path = os.path.join(PLOTS_DIR, fit_data_filename)
+                pd.DataFrame({'x': x_sorted, 'y': y}).to_csv(fit_data_path)
                 
                 # Plot the fit line
                 ax.plot(x_sorted, y, c='k', lw=0.75, label='Dynamic power law (Wlostowski et al)')
@@ -913,19 +942,22 @@ def main():
                 f.tight_layout()
                 sns.despine()
                 
-                # Save the figure
+                # Save the figure to plots directory
                 plot_filename = f'dqdt_vs_q_{freq}.png'
-                f.savefig(plot_filename, dpi=300, bbox_inches='tight')
+                plot_path = os.path.join(PLOTS_DIR, plot_filename)
+                f.savefig(plot_path, dpi=300, bbox_inches='tight')
                 plt.close(f)
                 
-                # Add download button for the plot
-                with open(plot_filename, "rb") as file:
-                    btn = st.download_button(
-                        label="Download dQ/dt vs Q Plot",
-                        data=file,
-                        file_name=plot_filename,
-                        mime="image/png"
-                    )
+                # Create HTML download link for the plot
+                plot_link = get_binary_download_link(
+                    file_path=plot_path,
+                    filename=plot_filename,
+                    link_text="Download dQ/dt vs Q Plot",
+                    mime_type="image/png"
+                )
+                
+                # Display the download link
+                st.markdown(plot_link, unsafe_allow_html=True)
                 geo = basin.to_crs('epsg:4326').geometry.values[0].centroid
                 area_ft2 = basin.to_crs('epsg:26910').geometry.values[0].area*10.7639104167
                 lat,lon = geo.y,geo.x
@@ -935,6 +967,16 @@ def main():
                 
                 # Convert basin to UTM for accurate area calculation
                 basin_utm = basin.to_crs('epsg:26910')
+                
+                # Calculate watershed area in km²
+                area_m2 = basin_utm.geometry.values[0].area
+                area_km2 = area_m2 / 1000000
+                
+                # Check if watershed area is too large for this model
+                if area_km2 > 1500:
+                    st.error(f"Watershed area ({area_km2:.1f} km²) exceeds the 1500 km² limit for this model. This model does not implement flow routing required for larger watersheds at the daily timestep. Please select a different gage with a watershed area < 1500 km²")
+                    st.session_state.has_run_analysis = False
+                    return
                 
                 # Get forecast from multiple points based on watershed size or use zero rainfall if 'no_model' is selected
                 if st.session_state.selected_model == "no_model":
@@ -1033,12 +1075,13 @@ def main():
                     tz=LA_TIMEZONE
                 )
                 
+                # Create the projection dataframe
                 natQ_df = pd.DataFrame({'Flow projection': natQ}, index=idx)
                 
-                # Interactive Plotly plot - Put this at the top
+                # Interactive Plotly plot
                 st.header('Daily average (not instantaneous) flow forecast')
                 
-                # Create plotly figure with secondary y-axis for rainfall
+                # Create the figure
                 fig = go.Figure()
                 
                 # Add historical flow data
@@ -1243,8 +1286,16 @@ def main():
                     ]
                 )
                 
+                # Save the plot path for later reference
+                plot_filename = f"flow_projection_{site}_{datetime.datetime.now().strftime('%Y%m%d')}.html"
+                plot_path = os.path.join(PLOTS_DIR, plot_filename)
+                st.session_state.plot_path = plot_path
+                
                 # Show the plot
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # Save the plot to the plots directory
+                fig.write_html(plot_path)
                 
                 # Display additional information at the bottom
                 with st.expander("Projection Details", expanded=False):
@@ -1295,40 +1346,37 @@ def main():
                     )
                 
                 # Store the data in session state
-                st.session_state.historical_data = df
-                st.session_state.projected_data = natQ_df
+                st.session_state.historical_data = df.copy()
+                st.session_state.projected_data = natQ_df.copy()
                 st.session_state.plot_dates = {
                     'stop_datetime': stop_datetime,
                     'future_stop_datetime': future_stop_datetime
                 }
                 
-                # Add download buttons
+                # Save data to files in plots directory
                 date_str = datetime.datetime.now().strftime("%Y%m%d")
+                historical_filename = f"historical_flow_{site}_{date_str}.csv"
+                projection_filename = f"projected_flow_{site}_{date_str}_{current_model}.csv"
                 
-                # Create columns for download buttons to place them side by side
+                # Save files to plots directory
+                historical_path = os.path.join(PLOTS_DIR, historical_filename)
+                projection_path = os.path.join(PLOTS_DIR, projection_filename)
+                df.to_csv(historical_path)
+                natQ_df.to_csv(projection_path)
+                
+                # Create HTML download links instead of Streamlit download buttons
+                historical_link = get_csv_download_link(df, historical_filename, "Download Historical Data")
+                projection_link = get_csv_download_link(natQ_df, projection_filename, "Download Projected Data")
+                
+                # Create columns for download links to place them side by side
                 col1, col2 = st.columns(2)
                 
-                # Add a download button for the historical data
+                # Display the download links
                 with col1:
-                    csv_historical = df.to_csv()
-                    historical_filename = f"historical_flow_{site}_{date_str}.csv"
-                    st.download_button(
-                        label="Download Historical Data",
-                        data=csv_historical,
-                        file_name=historical_filename,
-                        mime="text/csv",
-                    )
+                    st.markdown(historical_link, unsafe_allow_html=True)
                 
-                # Add a download button for the projected data
                 with col2:
-                    csv_projection = natQ_df.to_csv()
-                    projection_filename = f"projected_flow_{site}_{date_str}_{current_model}.csv"
-                    st.download_button(
-                        label="Download Projected Data",
-                        data=csv_projection,
-                        file_name=projection_filename,
-                        mime="text/csv",
-                    )
+                    st.markdown(projection_link, unsafe_allow_html=True)
                 
                 # Display data tables
                 table_col1, table_col2 = st.columns(2)
