@@ -289,6 +289,53 @@ def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecm
     
     return combined_forecast
 
+def get_historical_rainfall_data(latitude, longitude, start_date, end_date):
+    """
+    Get historical daily rainfall data using Open-Meteo API
+    
+    Args:
+        latitude (float): Location latitude
+        longitude (float): Location longitude
+        start_date (str): Start date in format YYYY-MM-DD
+        end_date (str): End date in format YYYY-MM-DD
+        
+    Returns:
+        pandas.DataFrame: DataFrame with daily precipitation data
+    """
+    base_url = "https://archive-api.open-meteo.com/v1/archive"
+    
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": "precipitation_sum",
+        "timezone": "auto"
+    }
+    
+    try:
+        response = requests.get(base_url, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Create DataFrame from the response
+            df = pd.DataFrame({
+                "date": pd.to_datetime(data["daily"]["time"]),
+                "precipitation_mm": data["daily"]["precipitation_sum"]
+            })
+            
+            # Set date as index
+            df.set_index("date", inplace=True)
+            
+            return df
+        else:
+            st.warning(f"Error retrieving historical rainfall data: {response.status_code}")
+            return None
+    except Exception as e:
+        st.warning(f"Error retrieving historical rainfall data: {str(e)}")
+        return None
+
 def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
     """
     Get daily rainfall forecast using Open-Meteo API for a single point.
@@ -319,6 +366,55 @@ def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
         else:
             # If even the default model fails, raise the exception
             raise e
+
+@cache_data
+def get_historical_rainfall(latitude, longitude, start_date, end_date, timezone="auto"):
+    """
+    Get historical daily rainfall data using Open-Meteo API
+    
+    Args:
+        latitude (float): Location latitude
+        longitude (float): Location longitude
+        start_date (str): Start date in format YYYY-MM-DD
+        end_date (str): End date in format YYYY-MM-DD
+        timezone (str): Timezone name (default: auto)
+        
+    Returns:
+        pandas.DataFrame: DataFrame with daily precipitation data
+    """
+    base_url = "https://archive-api.open-meteo.com/v1/archive"
+    
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": "precipitation_sum",
+        "timezone": timezone
+    }
+    
+    try:
+        response = requests.get(base_url, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Create DataFrame from the response
+            df = pd.DataFrame({
+                "date": pd.to_datetime(data["daily"]["time"]),
+                "precipitation_mm": data["daily"]["precipitation_sum"]
+            })
+            
+            # Set date as index
+            df.set_index("date", inplace=True)
+            
+            return df
+        else:
+            st.warning(f"Error retrieving historical rainfall data: {response.status_code}")
+            return None
+    except Exception as e:
+        st.warning(f"Error retrieving historical rainfall data: {str(e)}")
+        return None
 
 def main():
     st.title('Streamflow Projection App')
@@ -524,14 +620,62 @@ def main():
                 mask = df.index.dayofyear.isin(projection_doys)
                 seasonal_data = df[mask]
                 
+                # Get basin centroid coordinates
+                geo = basin.to_crs('epsg:4326').geometry.values[0].centroid
+                centroid_lat = geo.y
+                centroid_lon = geo.x
+                
+                # Get historical rainfall data at basin centroid
+                with st.spinner("Retrieving historical rainfall data for basin centroid..."):
+                    rainfall_df = get_historical_rainfall(
+                        latitude=centroid_lat,
+                        longitude=centroid_lon,
+                        start_date=start_str,
+                        end_date=stop_str,
+                        timezone=LA_TIMEZONE.zone
+                    )
+                
                 if len(seasonal_data) > 0:
-                    qs = seasonal_data[site].values
+                    # Filter out days with rainfall if rainfall data is available
+                    if rainfall_df is not None:
+                        # Convert seasonal_data index to date only for matching with rainfall_df
+                        seasonal_dates = seasonal_data.index.date
+                        
+                        # Create a mask for days without rainfall (< 1mm)
+                        no_rain_mask = []
+                        for date in seasonal_dates:
+                            date_str = pd.Timestamp(date)
+                            if date_str in rainfall_df.index:
+                                # If rainfall is less than 1mm, consider it a dry day
+                                no_rain_mask.append(rainfall_df.loc[date_str, 'precipitation_mm'] < 1.0)
+                            else:
+                                # If no rainfall data for this date, assume it's a dry day
+                                no_rain_mask.append(True)
+                        
+                        # Apply the no-rain mask to the seasonal data
+                        dry_seasonal_data = seasonal_data[no_rain_mask]
+                        # st.info(f"Filtered out {len(seasonal_data) - len(dry_seasonal_data)} days with rainfall > 1mm from recession analysis")
+                        
+                        # Use the dry seasonal data for recession analysis
+                        qs = dry_seasonal_data[site].values
+                    else:
+                        # If rainfall data retrieval failed, use all seasonal data
+                        st.warning("Could not retrieve rainfall data. Using all seasonal data for recession analysis.")
+                        qs = seasonal_data[site].values
+                    
                     # Calculate gradients on the full time series first
                     all_qs = df[site].values
                     all_dqs = np.gradient(all_qs,86400)
+                    
                     # Map gradients back to the seasonal data
-                    seasonal_indices = np.where(mask)[0]
-                    dqs = all_dqs[seasonal_indices]
+                    if rainfall_df is not None and len(no_rain_mask) > 0:
+                        # For dry days only
+                        dry_seasonal_indices = np.where(mask)[0][no_rain_mask]
+                        dqs = all_dqs[dry_seasonal_indices]
+                    else:
+                        # For all seasonal days
+                        seasonal_indices = np.where(mask)[0]
+                        dqs = all_dqs[seasonal_indices]
                     
                     # Find recessions (when flow is decreasing and positive)
                     idx = (dqs < 0) & (qs > 0)
@@ -539,7 +683,34 @@ def main():
                     DQS = dqs[idx]
                 else:
                     st.warning("Not enough historical data matching the projection period's days of year. Using all available data instead.")
-                    qs = df[site].values
+                    
+                    # Filter out days with rainfall if rainfall data is available
+                    if rainfall_df is not None:
+                        # Convert df index to date only for matching with rainfall_df
+                        all_dates = df.index.date
+                        
+                        # Create a mask for days without rainfall (< 1mm)
+                        no_rain_mask = []
+                        for date in all_dates:
+                            date_str = pd.Timestamp(date)
+                            if date_str in rainfall_df.index:
+                                # If rainfall is less than 1mm, consider it a dry day
+                                no_rain_mask.append(rainfall_df.loc[date_str, 'precipitation_mm'] < 1.0)
+                            else:
+                                # If no rainfall data for this date, assume it's a dry day
+                                no_rain_mask.append(True)
+                        
+                        # Apply the no-rain mask to all data
+                        dry_df = df[no_rain_mask]
+                        st.info(f"Filtered out {len(df) - len(dry_df)} days with rainfall > 1mm from recession analysis")
+                        
+                        # Use the dry data for recession analysis
+                        qs = dry_df[site].values
+                    else:
+                        # If rainfall data retrieval failed, use all data
+                        st.warning("Could not retrieve rainfall data. Using all data for recession analysis.")
+                        qs = df[site].values
+                    
                     dqs = np.gradient(qs,86400)
                     idx = (dqs < 0) & (qs > 0)
                     QS = qs[idx]
