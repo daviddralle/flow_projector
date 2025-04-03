@@ -2,3 +2,5 @@
 pygeohydro
 pynhd
 plotly
+matplotlib
+seaborn
