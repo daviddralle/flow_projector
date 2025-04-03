@@ -973,8 +973,8 @@ def main():
                 area_km2 = area_m2 / 1000000
                 
                 # Check if watershed area is too large for this model
-                if area_km2 > 1500:
-                    st.error(f"Watershed area ({area_km2:.1f} km²) exceeds the 1500 km² limit for this model. This model does not implement flow routing required for larger watersheds at the daily timestep. Please select a different gage with a watershed area < 1500 km²")
+                if area_km2 > 2000:
+                    st.error(f"Watershed area ({area_km2:.1f} km²) exceeds the 2000 km² limit for this model. This model does not implement flow routing required for larger watersheds at the daily timestep. Please select a different gage with a watershed area < 2000 km²")
                     st.session_state.has_run_analysis = False
                     return
                 
