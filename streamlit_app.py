@@ -124,7 +124,6 @@ def getFlow(site, start, stop):
         else:
             df = df_dv
     except Exception as e:
-        # st.warning(f"Could not fetch instantaneous values for today: {e}")
         df = df_dv
     
     # Resample to daily frequency
@@ -132,28 +131,17 @@ def getFlow(site, start, stop):
     df.columns = [site]
     
     # Get basin information
-    st.write(f"Debug: Retrieving basin information for site {site}")
+    basin = nldi.get_basins(site).to_crs('epsg:26910')
+
     try:
-        basin = nldi.get_basins(site).to_crs('epsg:26910')
-        st.write(f"Debug: Successfully retrieved basin for site {site}")
-        
-        try:
-            geoms = [item for item in list(basin.geometry[0])]
-            idx = np.argmax([item.area for item in geoms])
-            basin.geometry = [geoms[idx]]
-            st.info('Found multipolygon - fixing')
-        except Exception as e:
-            st.write(f"Debug: No multipolygon fix needed for site {site}: {str(e)}")
-            basin.geometry = basin.geometry
-            
-        area_mm2 = basin.to_crs('epsg:26910').geometry[0].area*1000**2
-        st.write(f"Debug: Basin area calculated for site {site}: {area_mm2/1000**2:.2f} km²")
-        df = df * 35.3147  # Convert from cms to cfs
-        st.write(f"Debug: Completed getFlow for site {site}")
-        return df, basin
-    except Exception as e:
-        st.error(f"Error retrieving basin for site {site}: {str(e)}")
-        raise
+        geoms = [item for item in list(basin.geometry[0])]
+        idx = np.argmax([item.area for item in geoms])
+        basin.geometry = [geoms[idx]]
+    except:
+        basin.geometry = basin.geometry
+    area_mm2 = basin.to_crs('epsg:26910').geometry[0].area*1000**2
+    df = df * 35.3147  # Convert from cms to cfs
+    return df, basin
 
 # Sensitivity function
 @cache_data
