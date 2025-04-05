@@ -282,7 +282,7 @@ def generate_sample_points(basin_geometry, num_points):
     # If we couldn't get enough points, we'll work with what we have
     return sample_points
 
-def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="ecmwf_ifs025"):
+def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="gfs_seamless"):
     """
     Get daily rainfall forecast for multiple points in a watershed based on its size.
     
@@ -404,7 +404,7 @@ def get_historical_rainfall_data(latitude, longitude, start_date, end_date):
         st.warning(f"Error retrieving historical rainfall data: {str(e)}")
         return None
 
-def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
+def get_daily_rainfall_forecast(latitude, longitude, model="gfs_seamless"):
     """
     Get daily rainfall forecast using Open-Meteo API for a single point.
     
@@ -412,12 +412,13 @@ def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
     - ecmwf_ifs025: ECMWF IFS-HRES (European Centre for Medium-Range Weather Forecasts)
     - gfs_seamless: GFS (Global Forecast System from NOAA)
     - icon_seamless: ICON (German Weather Service/DWD)
+    - gem_seamless: GEM (Global Environmental Multiscale)
     """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": latitude,
         "longitude": longitude,
-        "daily": "precipitation_sum",
+        "daily": ["precipitation_sum", "et0_fao_evapotranspiration"],
         "timezone": "America/Los_Angeles",
         "models": [model]  # Correct format: "models" as a list
     }
@@ -425,12 +426,21 @@ def get_daily_rainfall_forecast(latitude, longitude, model="ecmwf_ifs025"):
         response = requests.get(url, params=params)
         response.raise_for_status()  # Raise exception for HTTP errors
         data = response.json()
+        
+        # Calculate effective precipitation (precip - ET, minimum of 0)
+        if 'daily' in data:
+            precip = np.array(data['daily']['precipitation_sum'])
+            et = np.array(data['daily']['et0_fao_evapotranspiration'])
+            effective_precip = np.maximum(precip - et, 0)
+            data['daily']['precipitation_sum'] = effective_precip.tolist()
+        
+
         return data
     except requests.RequestException as e:
         # If the selected model fails, fall back to default model
-        if model != "ecmwf_ifs025":
-            st.warning(f"Error with {model} model: {str(e)}. Falling back to ECMWF model.")
-            return get_daily_rainfall_forecast(latitude, longitude, "ecmwf_ifs025")
+        if model != "gfs_seamless":
+            st.warning(f"Error with {model} model: {str(e)}. Falling back to GFS model.")
+            return get_daily_rainfall_forecast(latitude, longitude, "gfs_seamless")
         else:
             # If even the default model fails, raise the exception
             raise e
@@ -616,9 +626,9 @@ def main():
     
     # Weather model selection
     model_mapping = {
-        "ECMWF (European Centre for Medium-Range Weather Forecasts)": "ecmwf_ifs025",
         "GFS (Global Forecast System - NOAA)": "gfs_seamless",
         "DWD (German Weather Service)": "icon_seamless",
+        "GEM (Global Environmental Multiscale)": "gem_seamless",
         "No model (zero rainfall)": "no_model"
     }
     
