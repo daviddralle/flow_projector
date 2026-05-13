@@ -300,7 +300,7 @@ def get_daily_rainfall_forecast_multi(basin_geometry, basin_utm=None, model="gfs
     # Calculate basin area in km²
     if basin_utm is not None:
         # Use the provided UTM basin for accurate area calculation
-        area_m2 = basin_utm.to_crs('epsg:26910').geometry[0].area
+        area_m2 = basin_utm.to_crs('epsg:26910').geometry.iloc[0].area
         area_km2 = area_m2 / 1000000
     else:
         # Fallback to rough estimate if UTM basin not provided
