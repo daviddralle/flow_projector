@@ -513,7 +513,7 @@ def get_binary_download_link(file_path, filename, link_text, mime_type):
 
 def main():
     st.title('Streamflow Projection App')
-    st.markdown('<small><a href="https://github.com/daviddralle/flow_projector/blob/main/README.md" target="_blank">More details in the GitHub README</a></small>', unsafe_allow_html=True)
+    st.markdown('<small><a href="https://github.com/daviddralle/flow_projector/blob/main/README.md" target="_blank">More details in the GitHub README</a> | <a href="https://github.com/daviddralle/flow_projector/blob/main/methods.pdf" target="_blank">View Methods Document (PDF)</a></small>', unsafe_allow_html=True)
     
     # Put all model information in a single collapsible expander
     with st.expander("⚠️ Model Caveats and Details", expanded=False):
