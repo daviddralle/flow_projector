@@ -134,12 +134,15 @@ def getFlow(site, start, stop):
     basin = nldi.get_basins(site).to_crs('epsg:26910')
 
     try:
-        geoms = [item for item in list(basin.geometry[0])]
+        # Get the first geometry using iloc to avoid KeyError on index
+        first_geom = basin.geometry.iloc[0]
+        # MultiPolygons have a .geoms attribute in newer shapely versions
+        geoms = list(first_geom.geoms) if hasattr(first_geom, 'geoms') else [first_geom]
         idx = np.argmax([item.area for item in geoms])
         basin.geometry = [geoms[idx]]
     except:
-        basin.geometry = basin.geometry
-    area_mm2 = basin.to_crs('epsg:26910').geometry[0].area*1000**2
+        pass
+    area_mm2 = basin.to_crs('epsg:26910').geometry.iloc[0].area*1000**2
     df = df * 35.3147  # Convert from cms to cfs
     return df, basin
 
