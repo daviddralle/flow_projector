@@ -1300,7 +1300,7 @@ def main():
                 st.session_state.plot_path = plot_path
                 
                 # Show the plot
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # Save the plot to the plots directory
                 fig.write_html(plot_path)
@@ -1349,7 +1349,7 @@ def main():
                     # Display the table with styling
                     st.dataframe(
                         precip_table.style.apply(highlight_today, axis=1),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True
                     )
                 
